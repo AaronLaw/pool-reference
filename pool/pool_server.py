@@ -116,6 +116,33 @@ class PoolServer:
         )
         return obj_to_response(res_dict)
 
+    async def get_login(self, request_obj) -> web.Response:
+        # TODO(pool): add rate limiting
+        launcher_id = request_obj.rel_url.query['launcher_id']
+        authentication_token = request_obj.rel_url.query['authentication_token']
+        authentication_token_error = check_authentication_token(launcher_id,
+                                                                authentication_token,
+                                                                self.pool.authentication_token_timeout)
+        if authentication_token_error is not None:
+            return authentication_token_error
+
+        farmer_record: Optional[FarmerRecord] = await self.pool.store.get_farmer_record(launcher_id)
+        if farmer_record is None:
+            return error_response(PoolErrorCode.FARMER_NOT_KNOWN,
+                                  f"Farmer with launcher_id {launcher_id} unknown.")
+
+        # Validate provided signature
+        signature = request_obj.rel_url.query['signature']
+        message = launcher_id + bytes(authentication_token)
+        if not AugSchemeMPL.verify(farmer_record.authentication_public_key, message, signature):
+            return error_response(PoolErrorCode.INVALID_SIGNATURE,
+                                  f"Failed to verify signature {signature} for launcher_id {launcher_id}.")
+
+        self.pool.log.info(f"Login successful for launcher_id: {launcher_id}")
+
+        # TODO(pool) Do what ever you like with the successful login
+        return obj_to_response({"login_data", "Put server side login information here?"})
+
 
 server: Optional[PoolServer] = None
 runner = None
@@ -138,6 +165,7 @@ async def start_pool_server():
             web.get("/", server.wrap_http_handler(server.index)),
             web.get("/pool_info", server.wrap_http_handler(server.get_pool_info)),
             web.post("/partial", server.wrap_http_handler(server.post_partial)),
+            web.get("/login", server.wrap_http_handler(server.get_login)),
         ]
     )
     runner = aiohttp.web.AppRunner(app, access_log=None)
