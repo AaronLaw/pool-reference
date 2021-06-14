@@ -7,6 +7,7 @@ pool_fee: 0.01
 pool_url: http://10.0.0.45
 min_difficulty: 10
 default_difficulty: 10
+authentication_token_timeout: 5
 default_target_puzzle_hash: txch16mhvz4cpzwq9dmds5lkjk22h34wftcc0xx728zmqwnla2wy2gl0qancuzs
 pool_fee_puzzle_hash: txch1ww8m7ttxuc2ng6qlthk609hkrt25mklcuqn882rkngnygeuu8fks36ckvs
 wallet_fingerprint: 2164248527

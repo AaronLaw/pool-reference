@@ -8,7 +8,12 @@ import aiohttp
 from blspy import AugSchemeMPL, PrivateKey
 from aiohttp import web
 from chia.pools.pool_wallet_info import POOL_PROTOCOL_VERSION
-from chia.protocols.pool_protocol import ErrorResponse, PoolErrorCode, PostPartialRequest, GetPoolInfoResponse
+from chia.protocols.pool_protocol import ErrorResponse, PoolErrorCode, GetFarmerResponse, GetPoolInfoResponse,\
+    PostPartialRequest, PostPartialResponse,\
+    PostFarmerRequest, PostFarmerResponse,\
+    PutFarmerRequest, PutFarmerResponse,\
+    get_current_authentication_token,\
+    validate_authentication_token
 from chia.util.hash import std_hash
 from chia.consensus.default_constants import DEFAULT_CONSTANTS
 from chia.consensus.constants import ConsensusConstants
@@ -29,6 +34,13 @@ def allow_cors(response: web.Response) -> web.Response:
 def error_response(code: PoolErrorCode, message: str):
     error : ErrorResponse = ErrorResponse(uint16(code.value), message)
     return obj_to_response(error)
+
+
+def check_authentication_token(launcher_id, token, timeout):
+    if not validate_authentication_token(token, timeout):
+        return error_response(PoolErrorCode.INVALID_AUTHENTICATION_TOKEN,
+                              f"authentication_token {token} invalid for farmer {launcher_id}.")
+    return None
 
 
 class PoolServer:
@@ -75,8 +87,75 @@ class PoolServer:
             str(self.pool.pool_fee),
             self.pool.info_description,
             self.pool.default_target_puzzle_hash,
+            self.pool.authentication_token_timeout,
         )
         return obj_to_response(res)
+
+    async def get_farmer(self, request_obj) -> web.Response:
+        # TODO(pool): add rate limiting
+        launcher_id = request_obj.rel_url.query['launcher_id']
+        authentication_token = request_obj.rel_url.query['authentication_token']
+
+        authentication_token_error = check_authentication_token(launcher_id,
+                                                                authentication_token,
+                                                                self.pool.authentication_token_timeout)
+        if authentication_token_error is not None:
+            return authentication_token_error
+
+        farmer_record: Optional[FarmerRecord] = await self.pool.store.get_farmer_record(launcher_id)
+        if farmer_record is None:
+            return error_response(PoolErrorCode.FARMER_NOT_KNOWN,
+                                  f"Farmer with launcher_id {launcher_id} unknown.")
+
+        # Validate provided signature
+        signature = request_obj.rel_url.query['signature']
+        message = launcher_id + bytes(authentication_token)
+        if not AugSchemeMPL.verify(farmer_record.authentication_public_key, message, signature):
+            return error_response(PoolErrorCode.INVALID_SIGNATURE,
+                                  f"Failed to verify signature {signature} for launcher_id {launcher_id}.")
+
+        response: GetFarmerResponse = GetFarmerResponse(farmer_record.authentication_public_key,
+                                                        farmer_record.payout_instructions,
+                                                        farmer_record.difficulty,
+                                                        farmer_record.points)
+
+        self.pool.log.info(f"Returning {response.to_json_dict()}, " f"launcher_id: {launcher_id}")
+        return obj_to_response(response)
+
+    async def post_farmer(self, request_obj) -> web.Response:
+        # TODO(pool): add rate limiting
+        post_farmer_request: PostFarmerRequest = PostFarmerRequest.from_json_dict(await request_obj.json())
+
+        authentication_token_error = check_authentication_token(post_farmer_request.payload.launcher_id,
+                                                                post_farmer_request.payload.authentication_token,
+                                                                self.pool.authentication_token_timeout)
+        if authentication_token_error is not None:
+            return authentication_token_error
+
+        post_farmer_response = await self.pool.add_farmer(post_farmer_request)
+
+        self.pool.log.info(
+            f"Returning {post_farmer_response}, " f"launcher_id: {post_farmer_request['payload']['launcher_id']}",
+        )
+        return obj_to_response(post_farmer_response)
+
+    async def put_farmer(self, request_obj) -> web.Response:
+        # TODO(pool): add rate limiting
+        put_farmer_request: PutFarmerRequest = PutFarmerRequest.from_json_dict(await request_obj.json())
+
+        authentication_token_error = check_authentication_token(put_farmer_request.payload.launcher_id,
+                                                                put_farmer_request.payload.authentication_token,
+                                                                self.pool.authentication_token_timeout)
+        if authentication_token_error is not None:
+            return authentication_token_error
+
+        # Process the request
+        put_farmer_response = await self.pool.update_farmer(put_farmer_request)
+
+        self.pool.log.info(
+            f"Returning {put_farmer_response}, " f"launcher_id: {put_farmer_request['payload']['launcher_id']}",
+        )
+        return obj_to_response(put_farmer_response)
 
     async def post_partial(self, request_obj) -> web.Response:
         start_time = time.time()
@@ -85,16 +164,10 @@ class PoolServer:
         partial: PostPartialRequest = PostPartialRequest.from_json_dict(request)
         time_received_partial = uint64(int(time.time()))
 
-        # It's important that on the first request from this farmer, the default difficulty is used. Changing the
-        # difficulty requires a few minutes, otherwise farmers can abuse by setting the difficulty right under the
-        # proof that they found.
         farmer_record: Optional[FarmerRecord] = await self.pool.store.get_farmer_record(partial.payload.launcher_id)
-        if farmer_record is not None:
-            current_difficulty: uint64 = farmer_record.difficulty
-            balance = farmer_record.points
-        else:
-            current_difficulty = self.pool.default_difficulty
-            balance = uint64(0)
+        if farmer_record is None:
+            return error_response(PoolErrorCode.FARMER_NOT_KNOWN,
+                                  f"Farmer with launcher_id {partial.payload.launcher_id} not known.")
 
         async def await_and_call(cor, *args):
             # 10 seconds gives our node some time to get the signage point, in case we are slightly slowed down
@@ -102,19 +175,19 @@ class PoolServer:
             res = await cor(args)
             self.pool.log.info(f"Delayed response: {res}")
 
-        res_dict = await self.pool.process_partial(partial, time_received_partial, balance, current_difficulty, True)
+        post_partial_response = await self.pool.process_partial(partial, farmer_record, time_received_partial)
 
-        if "error_code" in res_dict and "error_code" == PoolErrorCode.NOT_FOUND.value:
+        # TODO, discuss this: Wouldn't it make sense to make this blocking and return the actual response?
+        if "error_code" in post_partial_response and "error_code" == PoolErrorCode.NOT_FOUND.value:
             asyncio.create_task(
-                await_and_call(
-                    self.pool.process_partial, partial, time_received_partial, balance, current_difficulty, False
-                )
+                await_and_call(self.pool.process_partial, partial, time_received_partial, farmer_record)
             )
 
         self.pool.log.info(
-            f"Returning {res_dict}, time: {time.time() - start_time} " f"singleton: {request['payload']['launcher_id']}"
+            f"Returning {post_partial_response}, time: {time.time() - start_time} "
+            f"launcher_id: {request['payload']['launcher_id']}"
         )
-        return obj_to_response(res_dict)
+        return obj_to_response(post_partial_response)
 
     async def get_login(self, request_obj) -> web.Response:
         # TODO(pool): add rate limiting
@@ -164,6 +237,9 @@ async def start_pool_server():
         [
             web.get("/", server.wrap_http_handler(server.index)),
             web.get("/pool_info", server.wrap_http_handler(server.get_pool_info)),
+            web.get("/farmer", server.wrap_http_handler(server.get_farmer)),
+            web.post("/farmer", server.wrap_http_handler(server.post_farmer)),
+            web.put("/farmer", server.wrap_http_handler(server.put_farmer)),
             web.post("/partial", server.wrap_http_handler(server.post_partial)),
             web.get("/login", server.wrap_http_handler(server.get_login)),
         ]
