@@ -9,7 +9,6 @@ from blspy import AugSchemeMPL, PrivateKey
 from aiohttp import web
 from chia.pools.pool_wallet_info import POOL_PROTOCOL_VERSION
 from chia.protocols.pool_protocol import (
-    ErrorResponse,
     PoolErrorCode,
     GetFarmerResponse,
     GetPoolInfoResponse,
@@ -22,22 +21,18 @@ from chia.util.hash import std_hash
 from chia.consensus.default_constants import DEFAULT_CONSTANTS
 from chia.consensus.constants import ConsensusConstants
 from chia.util.json_util import obj_to_response
-from chia.util.ints import uint16, uint64, uint32, uint8
+from chia.util.ints import uint64, uint32, uint8
 from chia.util.default_root import DEFAULT_ROOT_PATH
 from chia.util.config import load_config
 
-from pool.pool import Pool
+from pool import Pool
+from error_response import error_response
 from store import FarmerRecord
 
 
 def allow_cors(response: web.Response) -> web.Response:
     response.headers["Access-Control-Allow-Origin"] = "*"
     return response
-
-
-def error_response(code: PoolErrorCode, message: str):
-    error: ErrorResponse = ErrorResponse(uint16(code.value), message)
-    return obj_to_response(error)
 
 
 def check_authentication_token(launcher_id: bytes32, token: uint64, timeout: uint8) -> Optional[web.Response]:

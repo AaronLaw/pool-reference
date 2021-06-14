@@ -4,7 +4,7 @@ import time
 import traceback
 from asyncio import Task
 from math import floor
-from typing import Dict, Optional, Set, List, Tuple
+from typing import Dict, Optional, Set, List, Tuple, Union
 
 import os, yaml
 
@@ -37,14 +37,12 @@ from chia.consensus.pot_iterations import calculate_iterations_quality
 from chia.util.lru_cache import LRUCache
 from chia.wallet.transaction_record import TransactionRecord
 from chia.pools.pool_puzzles import (
-    launcher_id_to_p2_puzzle_hash,
     get_most_recent_singleton_coin_from_coin_solution,
 )
 
-from difficulty_adjustment import get_new_difficulty
+from error_response import error_response
 from singleton import create_absorb_transaction, get_and_validate_singleton_state_inner
 from store import FarmerRecord, PoolStore
-from pool_server import error_response
 
 
 class Pool:
@@ -63,6 +61,7 @@ class Pool:
         self.info_name = pool_config["pool_info"]["name"]
         self.info_logo_url = pool_config["pool_info"]["logo_url"]
         self.info_description = pool_config["pool_info"]["description"]
+        self.welcome_message = pool_config["welcome_message"]
 
         self.private_key = private_key
         self.public_key: G1Element = private_key.get_g1()
@@ -540,12 +539,10 @@ class Pool:
             ] = await self.get_and_validate_singleton_state(request.payload.launcher_id)
 
             if singleton_state_tuple is None:
-                self.log.info("Singleton state is None.")
-                # This singleton doesn't exist, or isn't assigned to our pool
-                return
+                return error_response(PoolErrorCode.INVALID_SINGLETON, f"Invalid singleton, or not a pool member")
+
             last_spend, last_state = singleton_state_tuple
 
-            self.log.info(f"New farmer: {request.payload.launcher_id.hex()}")
             if (
                 request.payload.suggested_difficulty is None
                 or request.payload.suggested_difficulty < self.min_difficulty
@@ -577,12 +574,26 @@ class Pool:
             self.scan_p2_singleton_puzzle_hashes.add(request.payload.proof_of_space.pool_contract_puzzle_hash)
             await self.store.add_farmer_record(farmer_record)
 
+            return PostFarmerResponse(self.welcome_message)
+
     async def update_farmer(self, request: PutFarmerRequest):
         farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(request.payload.launcher_id)
         if farmer_record is None:
             return error_response(
                 PoolErrorCode.FARMER_NOT_KNOWN, f"Farmer with launcher_id {request.payload.launcher_id} not known."
             )
+
+        singleton_state_tuple: Optional[Tuple[CoinSolution, PoolState]] = await self.get_and_validate_singleton_state(
+            request.payload.launcher_id
+        )
+        last_spend, last_state = singleton_state_tuple
+
+        if singleton_state_tuple is None:
+            return error_response(PoolErrorCode.INVALID_SINGLETON, f"Invalid singleton, or not a pool member")
+
+        if not AugSchemeMPL.verify(last_state.owner_pubkey, request.payload, request.signature):
+            return error_response(PoolErrorCode.INVALID_SIGNATURE, f"Invalid signature")
+
         farmer_dict = farmer_record.to_json_dict()
         response_dict = {}
         if request.payload.authentication_public_key is not None:
@@ -592,18 +603,29 @@ class Pool:
                 farmer_dict["authentication_public_key"] = request.payload.authentication_public_key
 
         if request.payload.payout_instructions is not None:
-            is_new_value = farmer_record.payout_instructions != request.payload.payout_instructions
+            is_new_value = (
+                farmer_record.payout_instructions != request.payload.payout_instructions
+                and request.payload.payout_instructions is not None
+                and len(hexstr_to_bytes(request.payload.payout_instructions)) == 32
+            )
             response_dict["payout_instructions"] = is_new_value
             if is_new_value:
                 farmer_dict["payout_instructions"] = request.payload.payout_instructions
 
         if request.payload.suggested_difficulty is not None:
-            is_new_value = farmer_record.suggested_difficulty != request.payload.suggested_difficulty
+            is_new_value = (
+                farmer_record.suggested_difficulty != request.payload.suggested_difficulty
+                and request.payload.suggested_difficulty is not None
+                and request.payload.suggested_difficulty >= self.min_difficulty
+            )
             response_dict["suggested_difficulty"] = is_new_value
             if is_new_value:
                 farmer_dict["suggested_difficulty"] = request.payload.suggested_difficulty
 
+        self.log.info(f"Updated farmer: {response_dict}")
         await self.store.add_farmer_record(FarmerRecord.from_json_dict(farmer_dict))
+
+        return PutFarmerResponse.from_json_dict(response_dict)
 
     async def get_and_validate_singleton_state(self, launcher_id: bytes32) -> Optional[Tuple[CoinSolution, PoolState]]:
         """
