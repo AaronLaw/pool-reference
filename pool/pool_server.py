@@ -5,7 +5,7 @@ import traceback
 from typing import Dict, Callable, Optional
 
 import aiohttp
-from blspy import AugSchemeMPL, PrivateKey
+from blspy import AugSchemeMPL, PrivateKey, G2Element
 from aiohttp import web
 from chia.pools.pool_wallet_info import POOL_PROTOCOL_VERSION
 from chia.protocols.pool_protocol import (
@@ -17,6 +17,7 @@ from chia.protocols.pool_protocol import (
     PutFarmerRequest,
 )
 from chia.types.blockchain_format.sized_bytes import bytes32
+from chia.util.byte_types import hexstr_to_bytes
 from chia.util.hash import std_hash
 from chia.consensus.default_constants import DEFAULT_CONSTANTS
 from chia.consensus.constants import ConsensusConstants
@@ -96,8 +97,8 @@ class PoolServer:
 
     async def get_farmer(self, request_obj) -> web.Response:
         # TODO(pool): add rate limiting
-        launcher_id = request_obj.rel_url.query["launcher_id"]
-        authentication_token = request_obj.rel_url.query["authentication_token"]
+        launcher_id = hexstr_to_bytes(request_obj.rel_url.query["launcher_id"])
+        authentication_token = uint64(request_obj.rel_url.query["authentication_token"])
 
         authentication_token_error: Optional[web.Response] = check_authentication_token(
             launcher_id, authentication_token, self.pool.authentication_token_timeout
@@ -107,15 +108,17 @@ class PoolServer:
 
         farmer_record: Optional[FarmerRecord] = await self.pool.store.get_farmer_record(launcher_id)
         if farmer_record is None:
-            return error_response(PoolErrorCode.FARMER_NOT_KNOWN, f"Farmer with launcher_id {launcher_id} unknown.")
+            return error_response(
+                PoolErrorCode.FARMER_NOT_KNOWN, f"Farmer with launcher_id {launcher_id.hex()} unknown."
+            )
 
         # Validate provided signature
-        signature = request_obj.rel_url.query["signature"]
+        signature: G2Element = G2Element.from_bytes(hexstr_to_bytes(request_obj.rel_url.query["signature"]))
         message = launcher_id + bytes(authentication_token)
         if not AugSchemeMPL.verify(farmer_record.authentication_public_key, message, signature):
             return error_response(
                 PoolErrorCode.INVALID_SIGNATURE,
-                f"Failed to verify signature {signature} for launcher_id {launcher_id}.",
+                f"Failed to verify signature {signature} for launcher_id {launcher_id.hex()}.",
             )
 
         response: GetFarmerResponse = GetFarmerResponse(
@@ -125,7 +128,7 @@ class PoolServer:
             farmer_record.points,
         )
 
-        self.pool.log.info(f"Returning {response.to_json_dict()}, " f"launcher_id: {launcher_id}")
+        self.pool.log.info(f"Returning {response.to_json_dict()}, " f"launcher_id: {launcher_id.hex()}")
         return obj_to_response(response)
 
     async def post_farmer(self, request_obj) -> web.Response:
@@ -143,7 +146,7 @@ class PoolServer:
         post_farmer_response = await self.pool.add_farmer(post_farmer_request)
 
         self.pool.log.info(
-            f"Returning {post_farmer_response}, " f"launcher_id: {post_farmer_request['payload']['launcher_id']}",
+            f"Returning {post_farmer_response}, " f"launcher_id: {post_farmer_request.payload.launcher_id.hex()}",
         )
         return obj_to_response(post_farmer_response)
 
@@ -163,7 +166,7 @@ class PoolServer:
         put_farmer_response = await self.pool.update_farmer(put_farmer_request)
 
         self.pool.log.info(
-            f"Returning {put_farmer_response}, " f"launcher_id: {put_farmer_request['payload']['launcher_id']}",
+            f"Returning {put_farmer_response}, " f"launcher_id: {put_farmer_request.payload.launcher_id.hex()}",
         )
         return obj_to_response(put_farmer_response)
 
@@ -177,7 +180,8 @@ class PoolServer:
         farmer_record: Optional[FarmerRecord] = await self.pool.store.get_farmer_record(partial.payload.launcher_id)
         if farmer_record is None:
             return error_response(
-                PoolErrorCode.FARMER_NOT_KNOWN, f"Farmer with launcher_id {partial.payload.launcher_id} not known."
+                PoolErrorCode.FARMER_NOT_KNOWN,
+                f"Farmer with launcher_id {partial.payload.launcher_id.hex()} not known.",
             )
 
         async def await_and_call(cor, *args):

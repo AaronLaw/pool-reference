@@ -5,7 +5,7 @@ pool_info:
   description: (example) The Reference Pool allows you to pool with low fees, paying out daily using Chia.
 welcome_message: "Welcome to the reference pool!"
 pool_fee: 0.01
-pool_url: http://116.0.231.226
+pool_url: http://192.168.2.107
 min_difficulty: 10
 default_difficulty: 10
 authentication_token_timeout: 5

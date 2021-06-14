@@ -38,6 +38,8 @@ from chia.util.lru_cache import LRUCache
 from chia.wallet.transaction_record import TransactionRecord
 from chia.pools.pool_puzzles import (
     get_most_recent_singleton_coin_from_coin_solution,
+    get_delayed_puz_info_from_launcher_spend,
+    launcher_id_to_p2_puzzle_hash,
 )
 
 from error_response import error_response
@@ -557,12 +559,17 @@ class Pool:
                     f"Payout instructions must be an xch address for this pool.",
                 )
 
-            if not AugSchemeMPL.verify(last_state.owner_pubkey, request.payload, request.signature):
+            if not AugSchemeMPL.verify(last_state.owner_pubkey, bytes(request.payload), request.signature):
                 return error_response(PoolErrorCode.INVALID_SIGNATURE, f"Invalid signature")
+
+            delay_time, delay_puzzle_hash = get_delayed_puz_info_from_launcher_spend(last_spend)
+            p2_singleton_puzzle_hash = launcher_id_to_p2_puzzle_hash(
+                request.payload.launcher_id, delay_time, delay_puzzle_hash
+            )
 
             farmer_record = FarmerRecord(
                 request.payload.launcher_id,
-                request.payload.proof_of_space.pool_contract_puzzle_hash,
+                p2_singleton_puzzle_hash,
                 request.payload.authentication_public_key,
                 last_spend,
                 last_state,
@@ -571,7 +578,7 @@ class Pool:
                 request.payload.payout_instructions,
                 True,
             )
-            self.scan_p2_singleton_puzzle_hashes.add(request.payload.proof_of_space.pool_contract_puzzle_hash)
+            self.scan_p2_singleton_puzzle_hashes.add(p2_singleton_puzzle_hash)
             await self.store.add_farmer_record(farmer_record)
 
             return PostFarmerResponse(self.welcome_message)
@@ -591,7 +598,7 @@ class Pool:
         if singleton_state_tuple is None:
             return error_response(PoolErrorCode.INVALID_SINGLETON, f"Invalid singleton, or not a pool member")
 
-        if not AugSchemeMPL.verify(last_state.owner_pubkey, request.payload, request.signature):
+        if not AugSchemeMPL.verify(last_state.owner_pubkey, bytes(request.payload), request.signature):
             return error_response(PoolErrorCode.INVALID_SIGNATURE, f"Invalid signature")
 
         farmer_dict = farmer_record.to_json_dict()
