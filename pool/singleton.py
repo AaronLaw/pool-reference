@@ -102,6 +102,9 @@ async def get_and_validate_singleton_state_inner(
             elif last_not_none_state.version != desired_state.version:
                 log.info(f"Wrong version {last_not_none_state.version}")
                 is_pool_member = False
+            elif last_not_none_state.state != desired_state.state:
+                log.info(f"Invalid singleton state {last_not_none_state.state}")
+                is_pool_member = False
 
         log.info(f"Is pool member? {is_pool_member}")
         return saved_solution, saved_state, updated, is_pool_member

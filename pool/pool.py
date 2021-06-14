@@ -509,11 +509,6 @@ class Pool:
                 self.log.info("Singleton state is None.")
                 # This singleton doesn't exist, or isn't assigned to our pool
                 return
-            last_spend, last_state = singleton_state_tuple
-            if last_state.state == PoolSingletonState.LEAVING_POOL.value:
-                self.log.info("Leaving pool, so no rewards")
-                # Don't give rewards while escaping from the pool
-                return
 
             async with self.store.lock:
                 farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(partial.payload.launcher_id)
@@ -531,7 +526,6 @@ class Pool:
             self.log.error(f"Exception in confirming partial: {e} {error_stack}")
 
     async def add_farmer(self, request: PostFarmerRequest):
-        farmer_dict = {}
         async with self.store.lock:
             farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(request.payload.launcher_id)
             if farmer_record is not None:
@@ -539,9 +533,6 @@ class Pool:
                     PoolErrorCode.FARMER_ALREADY_KNOWN,
                     f"Farmer with launcher_id {request.payload.launcher_id} already known.",
                 )
-
-            farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(request.payload.launcher_id)
-            assert farmer_record is not None
 
             singleton_state_tuple: Optional[
                 Tuple[CoinSolution, PoolState]
@@ -552,26 +543,22 @@ class Pool:
                 # This singleton doesn't exist, or isn't assigned to our pool
                 return
             last_spend, last_state = singleton_state_tuple
-            if last_state.state == PoolSingletonState.LEAVING_POOL.value:
-                self.log.info("Leaving pool, so no rewards")
-                # Don't give rewards while escaping from the pool
-                return
 
             self.log.info(f"New farmer: {request.payload.launcher_id.hex()}")
+
             farmer_record = FarmerRecord(
                 request.payload.launcher_id,
                 request.payload.proof_of_space.pool_contract_puzzle_hash,
                 request.payload.authentication_public_key,
                 last_spend,
                 last_state,
-                0,
+                uint64(0),
                 request.payload.suggested_difficulty,
                 request.payload.payout_instructions,
                 True,
             )
             self.scan_p2_singleton_puzzle_hashes.add(request.payload.proof_of_space.pool_contract_puzzle_hash)
-
-        await self.store.add_farmer_record(FarmerRecord.from_json_dict(farmer_dict))
+            await self.store.add_farmer_record(farmer_record)
 
     async def update_farmer(self, request: PutFarmerRequest):
         farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(request.payload.launcher_id)
