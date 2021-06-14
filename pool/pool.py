@@ -26,6 +26,7 @@ from chia.types.coin_record import CoinRecord
 from chia.types.coin_solution import CoinSolution
 from chia.util.bech32m import decode_puzzle_hash
 from chia.consensus.constants import ConsensusConstants
+from chia.util.byte_types import hexstr_to_bytes
 from chia.util.ints import uint8, uint64, uint16, uint32
 from chia.util.default_root import DEFAULT_ROOT_PATH
 from chia.rpc.full_node_rpc_client import FullNodeRpcClient
@@ -545,6 +546,22 @@ class Pool:
             last_spend, last_state = singleton_state_tuple
 
             self.log.info(f"New farmer: {request.payload.launcher_id.hex()}")
+            if (
+                request.payload.suggested_difficulty is None
+                or request.payload.suggested_difficulty < self.min_difficulty
+            ):
+                difficulty: uint64 = self.default_difficulty
+            else:
+                difficulty = request.payload.suggested_difficulty
+
+            if len(hexstr_to_bytes(request.payload.payout_instructions)) != 32:
+                return error_response(
+                    PoolErrorCode.INVALID_PAYOUT_INSTRUCTIONS,
+                    f"Payout instructions must be an xch address for this pool.",
+                )
+
+            if not AugSchemeMPL.verify(last_state.owner_pubkey, request.payload, request.signature):
+                return error_response(PoolErrorCode.INVALID_SIGNATURE, f"Invalid signature")
 
             farmer_record = FarmerRecord(
                 request.payload.launcher_id,
@@ -553,7 +570,7 @@ class Pool:
                 last_spend,
                 last_state,
                 uint64(0),
-                request.payload.suggested_difficulty,
+                difficulty,
                 request.payload.payout_instructions,
                 True,
             )
