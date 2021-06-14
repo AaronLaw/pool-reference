@@ -10,11 +10,16 @@ import os, yaml
 
 from blspy import AugSchemeMPL, PrivateKey, G1Element
 from chia.pools.pool_wallet_info import PoolState, PoolSingletonState, POOL_PROTOCOL_VERSION
-from chia.protocols.pool_protocol import PoolErrorCode, \
-    PostPartialRequest, PostPartialResponse,\
-    PostFarmerRequest, PostFarmerResponse,\
-    PutFarmerRequest, PutFarmerResponse,\
-    get_current_authentication_token
+from chia.protocols.pool_protocol import (
+    PoolErrorCode,
+    PostPartialRequest,
+    PostPartialResponse,
+    PostFarmerRequest,
+    PostFarmerResponse,
+    PutFarmerRequest,
+    PutFarmerResponse,
+    get_current_authentication_token,
+)
 from chia.rpc.wallet_rpc_client import WalletRpcClient
 from chia.types.blockchain_format.coin import Coin
 from chia.types.coin_record import CoinRecord
@@ -47,16 +52,16 @@ class Pool:
         self.log = logging
         # If you want to log to a file: use filename='example.log', encoding='utf-8'
         self.log.basicConfig(level=logging.INFO)
-        
+
         # We load our configurations from here
-        with open(os.getcwd()+'/config.yaml') as f:
+        with open(os.getcwd() + "/config.yaml") as f:
             pool_config: Dict = yaml.safe_load(f)
-            
+
         # Set our pool info here
-        self.info_default_res = pool_config["pool_info"]["default_res"];
-        self.info_name = pool_config["pool_info"]["name"];
-        self.info_logo_url = pool_config["pool_info"]["logo_url"];
-        self.info_description = pool_config["pool_info"]["description"];
+        self.info_default_res = pool_config["pool_info"]["default_res"]
+        self.info_name = pool_config["pool_info"]["name"]
+        self.info_logo_url = pool_config["pool_info"]["logo_url"]
+        self.info_description = pool_config["pool_info"]["description"]
 
         self.private_key = private_key
         self.public_key: G1Element = private_key.get_g1()
@@ -100,9 +105,7 @@ class Pool:
 
         # The pool fees will be sent to this address. This MUST be on a different key than the target_puzzle_hash,
         # otherwise, the fees will be sent to the users. Using 690783650
-        self.pool_fee_puzzle_hash: bytes32 = bytes32(
-            decode_puzzle_hash(pool_config["pool_fee_puzzle_hash"])
-        )
+        self.pool_fee_puzzle_hash: bytes32 = bytes32(decode_puzzle_hash(pool_config["pool_fee_puzzle_hash"]))
 
         # This is the wallet fingerprint and ID for the wallet spending the funds from `self.default_target_puzzle_hash`
         self.wallet_fingerprint = pool_config["wallet_fingerprint"]
@@ -291,8 +294,10 @@ class Pool:
                         if singleton_coin_record is None:
                             continue
                         if singleton_coin_record.spent:
-                            self.log.warning(f"Singleton coin {singleton_coin_record.coin.name()} is spent, will not "
-                                             f"claim rewards")
+                            self.log.warning(
+                                f"Singleton coin {singleton_coin_record.coin.name()} is spent, will not "
+                                f"claim rewards"
+                            )
                             continue
 
                         spend_bundle = await create_absorb_transaction(
@@ -514,8 +519,7 @@ class Pool:
                 farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(partial.payload.launcher_id)
 
                 assert (
-                        partial.payload.proof_of_space.pool_contract_puzzle_hash
-                        == farmer_record.p2_singleton_puzzle_hash
+                    partial.payload.proof_of_space.pool_contract_puzzle_hash == farmer_record.p2_singleton_puzzle_hash
                 )
 
                 if farmer_record.is_pool_member:
@@ -529,53 +533,52 @@ class Pool:
     async def add_farmer(self, request: PostFarmerRequest):
         farmer_dict = {}
         async with self.store.lock:
-            farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(
-                request.payload.launcher_id
-            )
+            farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(request.payload.launcher_id)
             if farmer_record is not None:
-                return error_response(PoolErrorCode.FARMER_ALREADY_KNOWN,
-                                      f"Farmer with launcher_id {request.payload.launcher_id} already known.")
+                return error_response(
+                    PoolErrorCode.FARMER_ALREADY_KNOWN,
+                    f"Farmer with launcher_id {request.payload.launcher_id} already known.",
+                )
 
             farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(request.payload.launcher_id)
-            if farmer_record is None:
+            assert farmer_record is not None
 
-                singleton_state_tuple: Optional[
-                    Tuple[CoinSolution, PoolState]
-                ] = await self.get_and_validate_singleton_state(request.payload.launcher_id)
+            singleton_state_tuple: Optional[
+                Tuple[CoinSolution, PoolState]
+            ] = await self.get_and_validate_singleton_state(request.payload.launcher_id)
 
-                if singleton_state_tuple is None:
-                    self.log.info("Singleton state is None.")
-                    # This singleton doesn't exist, or isn't assigned to our pool
-                    return
-                last_spend, last_state = singleton_state_tuple
-                if last_state.state == PoolSingletonState.LEAVING_POOL.value:
-                    self.log.info("Leaving pool, so no rewards")
-                    # Don't give rewards while escaping from the pool
-                    return
+            if singleton_state_tuple is None:
+                self.log.info("Singleton state is None.")
+                # This singleton doesn't exist, or isn't assigned to our pool
+                return
+            last_spend, last_state = singleton_state_tuple
+            if last_state.state == PoolSingletonState.LEAVING_POOL.value:
+                self.log.info("Leaving pool, so no rewards")
+                # Don't give rewards while escaping from the pool
+                return
 
-                self.log.info(f"New farmer: {request.payload.launcher_id.hex()}")
-                farmer_record = FarmerRecord(
-                    request.payload.launcher_id,
-                    request.payload.proof_of_space.pool_contract_puzzle_hash,
-                    request.payload.authentication_public_key,
-                    last_spend,
-                    last_state,
-                    0,
-                    request.payload.suggested_difficulty,
-                    request.payload.payout_instructions,
-                    True,
-                )
-                self.scan_p2_singleton_puzzle_hashes.add(request.payload.proof_of_space.pool_contract_puzzle_hash)
+            self.log.info(f"New farmer: {request.payload.launcher_id.hex()}")
+            farmer_record = FarmerRecord(
+                request.payload.launcher_id,
+                request.payload.proof_of_space.pool_contract_puzzle_hash,
+                request.payload.authentication_public_key,
+                last_spend,
+                last_state,
+                0,
+                request.payload.suggested_difficulty,
+                request.payload.payout_instructions,
+                True,
+            )
+            self.scan_p2_singleton_puzzle_hashes.add(request.payload.proof_of_space.pool_contract_puzzle_hash)
 
         await self.store.add_farmer_record(FarmerRecord.from_json_dict(farmer_dict))
 
     async def update_farmer(self, request: PutFarmerRequest):
-        farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(
-            request.payload.launcher_id
-        )
+        farmer_record: Optional[FarmerRecord] = await self.store.get_farmer_record(request.payload.launcher_id)
         if farmer_record is None:
-            return error_response(PoolErrorCode.FARMER_NOT_KNOWN,
-                                  f"Farmer with launcher_id {request.payload.launcher_id} not known.")
+            return error_response(
+                PoolErrorCode.FARMER_NOT_KNOWN, f"Farmer with launcher_id {request.payload.launcher_id} not known."
+            )
         farmer_dict = farmer_record.to_json_dict()
         response_dict = {}
         if request.payload.authentication_public_key is not None:
@@ -612,9 +615,9 @@ class Pool:
             if farmer_rec is None:
                 desired_state: PoolState = PoolState(
                     POOL_PROTOCOL_VERSION,
-                    PoolSingletonState.INVALID.value,
+                    PoolSingletonState.FARMING_TO_POOL.value,
                     self.default_target_puzzle_hash,
-                    None,
+                    G1Element(),
                     self.pool_url,
                     self.relative_lock_height,
                 )
@@ -653,9 +656,7 @@ class Pool:
             # still keep track of this singleton if the farmer has changed to a different pool, in case they
             # switch back.
             self.log.info(f"Updating singleton state for {launcher_id}")
-            await self.store.update_singleton(
-                launcher_id, singleton_tip, singleton_tip_state, is_pool_member
-            )
+            await self.store.update_singleton(launcher_id, singleton_tip, singleton_tip_state, is_pool_member)
 
         if is_pool_member:
             return singleton_tip, singleton_tip_state
@@ -674,8 +675,10 @@ class Pool:
         pk2: G1Element = farmer_record.authentication_public_key
         valid_sig = AugSchemeMPL.aggregate_verify([pk1, pk2], [message, message], partial.aggregate_signature)
         if not valid_sig:
-            return error_response(PoolErrorCode.INVALID_SIGNATURE,
-                                  f"The aggregate signature is invalid {partial.auth_key_and_partial_aggregate_signature}")
+            return error_response(
+                PoolErrorCode.INVALID_SIGNATURE,
+                f"The aggregate signature is invalid {partial.auth_key_and_partial_aggregate_signature}",
+            )
 
         # TODO (chia-dev): Check DB p2_singleton_puzzle_hash and compare
         # if partial.payload.proof_of_space.pool_contract_puzzle_hash != p2_singleton_puzzle_hash:
@@ -688,19 +691,22 @@ class Pool:
             response = await self.node_rpc_client.get_recent_signage_point_or_eos(partial.payload.sp_hash, None)
 
         if response is None or response["reverted"]:
-            return error_response(PoolErrorCode.NOT_FOUND,
-                                  f"Did not find signage point or EOS {partial.payload.sp_hash}, {response}")
+            return error_response(
+                PoolErrorCode.NOT_FOUND, f"Did not find signage point or EOS {partial.payload.sp_hash}, {response}"
+            )
         node_time_received_sp = response["time_received"]
 
         signage_point: Optional[SignagePoint] = response.get("signage_point", None)
         end_of_sub_slot: Optional[EndOfSubSlotBundle] = response.get("eos", None)
 
         if time_received_partial - node_time_received_sp > self.partial_time_limit:
-            return error_response(PoolErrorCode.TOO_LATE,
-                                  f"Received partial in {time_received_partial - node_time_received_sp}. "
-                                  f"Make sure your proof of space lookups are fast, and network connectivity is good."
-                                  f"Response must happen in less than {self.partial_time_limit} seconds. NAS or network"
-                                  f" farming can be an issue")
+            return error_response(
+                PoolErrorCode.TOO_LATE,
+                f"Received partial in {time_received_partial - node_time_received_sp}. "
+                f"Make sure your proof of space lookups are fast, and network connectivity is good."
+                f"Response must happen in less than {self.partial_time_limit} seconds. NAS or network"
+                f" farming can be an issue",
+            )
 
         # Validate the proof
         if signage_point is not None:
@@ -712,8 +718,7 @@ class Pool:
             self.constants, challenge_hash, partial.payload.sp_hash
         )
         if quality_string is None:
-            return error_response(PoolErrorCode.INVALID_PROOF,
-                                  f"Invalid proof of space {partial.payload.sp_hash}")
+            return error_response(PoolErrorCode.INVALID_PROOF, f"Invalid proof of space {partial.payload.sp_hash}")
 
         current_difficulty = farmer_record.difficulty
         required_iters: uint64 = calculate_iterations_quality(
@@ -725,9 +730,10 @@ class Pool:
         )
 
         if required_iters >= self.iters_limit:
-            return error_response(PoolErrorCode.PROOF_NOT_GOOD_ENOUGH,
-                                  f"Proof of space has required iters {required_iters}, too high for difficulty "
-                                  f"{current_difficulty}")
+            return error_response(
+                PoolErrorCode.PROOF_NOT_GOOD_ENOUGH,
+                f"Proof of space has required iters {required_iters}, too high for difficulty " f"{current_difficulty}",
+            )
 
         await self.pending_point_partials.put((partial, time_received_partial, current_difficulty))
 
